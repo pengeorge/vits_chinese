@@ -1,4 +1,5 @@
-from text.symbols import symbols
+#from text.symbols import symbols
+from .symbols import symbols
 
 
 # Mappings from symbol to numeric ID and vice versa:

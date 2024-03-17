@@ -1,3 +1,4 @@
+import os
 import re
 
 from tn.chinese.normalizer import Normalizer
@@ -5,8 +6,8 @@ from tn.chinese.normalizer import Normalizer
 from pypinyin import lazy_pinyin, Style
 from pypinyin.core import load_phrases_dict
 
-from text import pinyin_dict
-from bert import TTSProsody
+from .text import pinyin_dict
+from .bert import TTSProsody
 
 
 def is_chinese(uchar):
@@ -31,7 +32,7 @@ def clean_chinese(text: str):
 
 def load_pinyin_dict():
     my_dict={}
-    with open("./text/pinyin-local.txt", "r", encoding='utf-8') as f:
+    with open(os.path.join(os.path.dirname(__file__), "text/pinyin-local.txt"), "r", encoding='utf-8') as f:
         content = f.readlines()
         for line in content:
             cuts = line.strip().split()
