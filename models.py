@@ -4,14 +4,14 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-import commons
-import modules
-import attentions
-import monotonic_align
+from . import commons
+from . import modules
+from . import attentions
+from . import monotonic_align
 
 from torch.nn import Conv1d, ConvTranspose1d, AvgPool1d, Conv2d
 from torch.nn.utils import weight_norm, remove_weight_norm, spectral_norm
-from commons import init_weights, get_padding
+from .commons import init_weights, get_padding
 
 
 class DurationPredictor(nn.Module):
@@ -925,7 +925,7 @@ class SynthesizerEval(nn.Module):
         len_z = z_p.size()[2]
         print('frame size is: ', len_z)
         if (len_z < 100):
-            print('no nead steam')
+            print('no need stream')
             z = self.flow(z_p, y_mask, g=g, reverse=True)
             one_time_wav = self.dec(z, g=g)[0, 0].data.cpu().float().numpy()
             return one_time_wav
@@ -974,3 +974,86 @@ class SynthesizerEval(nn.Module):
 
         stream_out_wav = numpy.asarray(stream_out_wav)
         return stream_out_wav
+
+    def infer_stream_generator(self, x, x_lengths, bert, sid=None, noise_scale=1, length_scale=1):
+        print("-----------------------------------------------------------------------------")
+        import datetime
+        import numpy
+        print(datetime.datetime.now())
+        x, m_p, logs_p, x_mask = self.enc_p(x, x_lengths, bert)
+        if self.n_speakers > 0:
+            g = self.emb_g(sid).unsqueeze(-1)  # [b, h, 1]
+        else:
+            g = None
+
+        logw = self.dp(x, x_mask, g=g)
+        w = torch.exp(logw) * x_mask * length_scale
+        w_ceil = torch.ceil(w + 0.35)
+        y_lengths = torch.clamp_min(torch.sum(w_ceil, [1, 2]), 1).long()
+        y_mask = torch.unsqueeze(commons.sequence_mask(y_lengths, None), 1).to(
+            x_mask.dtype
+        )
+        attn_mask = torch.unsqueeze(x_mask, 2) * torch.unsqueeze(y_mask, -1)
+        attn = commons.generate_path(w_ceil, attn_mask)
+
+        m_p = torch.matmul(attn.squeeze(1), m_p.transpose(1, 2)).transpose(
+            1, 2
+        )  # [b, t', t], [b, t, d] -> [b, d, t']
+        logs_p = torch.matmul(attn.squeeze(1), logs_p.transpose(1, 2)).transpose(
+            1, 2
+        )  # [b, t', t], [b, t, d] -> [b, d, t']
+
+        z_p = m_p + torch.randn_like(m_p) * torch.exp(logs_p) * noise_scale
+
+        len_z = z_p.size()[2]
+        print('frame size is: ', len_z)
+        if (len_z < 100):
+            print('no need stream')
+            z = self.flow(z_p, y_mask, g=g, reverse=True)
+            one_time_wav = self.dec(z, g=g)[0, 0].data.cpu().float().numpy()
+            yield one_time_wav, True
+            return
+
+        # can not change these parameters
+        hop_length = 256 # bert_vits.json
+        hop_frame = 9
+        hop_sample = hop_frame * hop_length
+        stream_chunk = 100
+        stream_index = 0
+        stream_out_wav = []
+
+        while (stream_index < len_z):
+            if (stream_index == 0): # start frame
+                cut_s = stream_index
+                cut_s_wav = 0
+            else:
+                cut_s = stream_index - hop_frame
+                cut_s_wav = hop_sample
+
+            if (stream_index + stream_chunk > len_z - hop_frame): # end frame
+                cut_e = len_z # stream_index + stream_chunk
+                cut_e_wav = 0
+            else:
+                cut_e = stream_index + stream_chunk + hop_frame
+                cut_e_wav = -1 * hop_sample
+            
+            z_chunk = z_p[:, :, cut_s:cut_e]
+            m_chunk = y_mask[:, :, cut_s:cut_e]
+            z_chunk = self.flow(z_chunk, m_chunk, g=g, reverse=True)
+            o_chunk = self.dec(z_chunk, g=g)[0, 0].data.cpu().float().numpy()
+            if cut_e_wav == 0:
+                o_chunk = o_chunk[cut_s_wav:]
+            else:
+                o_chunk = o_chunk[cut_s_wav:cut_e_wav]
+
+            stream_out_wav.extend(o_chunk)
+            print(datetime.datetime.now())
+            if cut_e_wav == 0:
+                yield o_chunk, True
+                stream_index = len_z
+            else:
+                yield o_chunk, False
+                stream_index = stream_index + stream_chunk
+        stream_out_wav = numpy.asarray(stream_out_wav)
+        # TODO save to file
+

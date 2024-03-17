@@ -3,3 +3,5 @@ Cython
 transformers
 tensorboard
 WeTextProcessing
+scipy
+pypinyin
